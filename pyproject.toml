@@ -35,6 +35,12 @@ Issues = "https://github.com/teng-lin/notebooklm-py/issues"
 
 [project.optional-dependencies]
 browser = ["playwright>=1.40.0"]
+service = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "redis>=5.0.0",
+    "python-multipart>=0.0.9",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -47,11 +53,16 @@ dev = [
     "pre-commit>=4.5.1",
     "ruff>=0.4.0",
     "vcrpy>=6.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "redis>=5.0.0",
+    "python-multipart>=0.0.9",
 ]
-all = ["notebooklm-py[browser,dev]"]
+all = ["notebooklm-py[browser,dev,service]"]
 
 [project.scripts]
 notebooklm = "notebooklm.notebooklm_cli:main"
+notebooklm-pdf-service = "notebooklm.service.main:main"
 
 [build-system]
 requires = ["hatchling", "hatch-fancy-pypi-readme"]
