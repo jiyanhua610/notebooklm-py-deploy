@@ -32,6 +32,7 @@ class ServiceSettings:
     max_queue_size: int = _int_env("NOTEBOOKLM_SERVICE_MAX_QUEUE_SIZE", 10)
     queue_timeout_seconds: int = _int_env("NOTEBOOKLM_SERVICE_QUEUE_TIMEOUT_SECONDS", 3600)
     public_base_url: str | None = os.getenv("NOTEBOOKLM_SERVICE_PUBLIC_BASE_URL")
+    default_language: str = os.getenv("NOTEBOOKLM_SERVICE_DEFAULT_LANGUAGE", "zh_Hans")
     source_wait_timeout_seconds: int = _int_env(
         "NOTEBOOKLM_SERVICE_SOURCE_WAIT_TIMEOUT_SECONDS", 300
     )
@@ -44,3 +45,4 @@ class ServiceSettings:
     def ensure_directories(self) -> None:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
+

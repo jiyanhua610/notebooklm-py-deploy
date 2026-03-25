@@ -43,6 +43,7 @@ class NotebookLMPdfProcessor:
             await on_stage(JobStatus.GENERATING_PDF, {"notebook_id": notebook.id})
             status = await client.artifacts.generate_slide_deck(
                 notebook.id,
+                language=(job.language or self._settings.default_language),
                 instructions=job.instructions,
                 slide_format=self._resolve_format(job.deck_format),
                 slide_length=self._resolve_length(job.deck_length),
@@ -106,3 +107,4 @@ class NotebookLMPdfProcessor:
             "short": SlideDeckLength.SHORT,
         }
         return mapping.get(value)
+

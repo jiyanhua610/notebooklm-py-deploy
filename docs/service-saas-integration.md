@@ -6,6 +6,8 @@
 
 - 服务基地址：`http://43.160.205.161`
 - API Token：`Jiumiao20260325`
+- 下载链接有效期：`7 天`
+- 任务记录保留期：`7 天`
 
 ## 1. 服务定位
 
@@ -36,6 +38,11 @@
 5. 下载链接是临时的，不保证长期有效
 6. 如果 NotebookLM 登录态过期，任务会失败
 7. 终态任务记录只保留一段时间，不保证永久可查询
+
+当前线上配置：
+
+- 下载链接默认保留 `7 天`
+- 任务记录默认保留 `7 天`
 
 这意味着：
 
@@ -116,6 +123,11 @@ GET /healthz
   可选，任务标题
 - `instructions`
   可选，额外生成说明
+- `language`
+  可选，输出语言代码。不传时服务默认使用 `zh_Hans`（简体中文）；传入后以调用方指定语言为准，例如：
+  - `zh_Hans`
+  - `en`
+  - `ja`
 - `deck_format`
   可选，当前支持：
   - `detailed_deck`
@@ -137,6 +149,19 @@ curl -X POST "http://43.160.205.161/v1/pdf-jobs" \
   -F "deck_length=default"
 ```
 
+默认不传 `language` 时，服务会按简体中文生成。
+
+如果你们希望覆盖成其他语言，可以显式传入：
+
+```bash
+curl -X POST "http://43.160.205.161/v1/pdf-jobs" \
+  -H "X-API-Token: Jiumiao20260325" \
+  -F "file=@example.pdf" \
+  -F "title=English Version" \
+  -F "language=en" \
+  -F "instructions=Generate an English PDF suitable for presentation"
+```
+
 ### 请求示例：Node.js
 
 ```ts
@@ -149,6 +174,8 @@ async function createPdfJob() {
   form.append("file", fs.createReadStream("./example.pdf"));
   form.append("title", "2026 Q1 行业分析");
   form.append("instructions", "请生成适合管理层汇报的中文 PDF");
+  // 不传 language 时，服务默认使用 zh_Hans（简体中文）
+  // form.append("language", "en");
   form.append("deck_format", "detailed_deck");
   form.append("deck_length", "default");
 
@@ -380,7 +407,7 @@ curl -X POST "http://43.160.205.161/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc
 
 ### 注意事项
 
-- 下载地址有 TTL，会过期
+- 下载地址当前默认有效期为 `7 天`
 - 过期后返回 404
 - 下载接口不要求 `X-API-Token`
 - 不要把这个链接当永久资源地址保存
@@ -423,7 +450,7 @@ curl -X POST "http://43.160.205.161/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc
 
 原因：
 
-- 服务端任务记录不是永久保存
+- 服务端任务记录当前默认保留 `7 天`，不是永久保存
 - 下载链接不是永久保存
 - 你们不能把服务端当作长期任务档案库
 
@@ -456,6 +483,7 @@ interface CreatePdfJobParams {
   filePath: string;
   title?: string;
   instructions?: string;
+  language?: "zh_Hans" | "en" | "ja" | string;
   deckFormat?: "detailed_deck" | "presenter_slides";
   deckLength?: "default" | "short";
 }

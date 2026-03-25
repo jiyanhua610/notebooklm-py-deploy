@@ -98,6 +98,7 @@ def create_app(
         file: UploadFile = File(...),
         title: str | None = Form(default=None),
         instructions: str | None = Form(default=None),
+        language: str | None = Form(default=None),
         deck_format: str = Form(default="detailed_deck"),
         deck_length: str = Form(default="default"),
     ) -> CreateJobResponse:
@@ -124,6 +125,7 @@ def create_app(
             filename=filename,
             input_path=str(input_path.resolve()),
             instructions=instructions,
+            language=(language.strip() if language and language.strip() else None),
             deck_format=deck_format,
             deck_length=deck_length,
         )
@@ -430,3 +432,5 @@ def _map_error_code(exc: Exception) -> str:
     if "network" in name:
         return "network_error"
     return "processing_failed"
+
+

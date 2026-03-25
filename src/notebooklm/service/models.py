@@ -45,6 +45,7 @@ class JobRecord:
     input_path: str
     status: str
     instructions: str | None
+    language: str | None
     deck_format: str
     deck_length: str
     created_at: str
@@ -66,6 +67,7 @@ class JobRecord:
         filename: str,
         input_path: str,
         instructions: str | None,
+        language: str | None,
         deck_format: str,
         deck_length: str,
     ) -> "JobRecord":
@@ -77,6 +79,7 @@ class JobRecord:
             input_path=input_path,
             status=JobStatus.QUEUED.value,
             instructions=instructions,
+            language=language,
             deck_format=deck_format,
             deck_length=deck_length,
             created_at=now,
@@ -124,3 +127,5 @@ class DownloadEntry:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DownloadEntry":
         return cls(**data)
+
+
