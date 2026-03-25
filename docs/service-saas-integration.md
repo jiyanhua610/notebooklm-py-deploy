@@ -2,6 +2,11 @@
 
 这份文档是写给 SaaS 开发团队的。目标是让后端工程师拿到这份文档后，就可以直接开始编码对接。
 
+当前联调地址与凭证：
+
+- 服务基地址：`http://43.160.205.161`
+- API Token：`Jiumiao20260325`
+
 ## 1. 服务定位
 
 这个微服务负责做一件事：
@@ -30,6 +35,7 @@
 4. 新任务不会并发调用 NotebookLM
 5. 下载链接是临时的，不保证长期有效
 6. 如果 NotebookLM 登录态过期，任务会失败
+7. 终态任务记录只保留一段时间，不保证永久可查询
 
 这意味着：
 
@@ -39,10 +45,10 @@
 
 ## 3. 鉴权方式
 
-所有业务接口都需要在请求头带上：
+除下载接口外，业务接口都需要在请求头带上：
 
 ```http
-X-API-Token: <服务端分配给你的固定 token>
+X-API-Token: Jiumiao20260325
 ```
 
 如果 token 错误，会返回：
@@ -50,6 +56,18 @@ X-API-Token: <服务端分配给你的固定 token>
 ```http
 401 Unauthorized
 ```
+
+### 3.1 下载接口的鉴权模型
+
+`GET /downloads/{token}` 不额外要求 `X-API-Token`。
+
+原因是下载链接里的 `{token}` 本身就是临时访问凭证。拿到这个 URL 的请求方，在链接过期前即可下载文件。
+
+这意味着：
+
+- 不要把 `download_url` 当成可公开传播的永久地址
+- 不要把 `download_url` 写入前端长期缓存
+- 如果需要长期保留，请由 SaaS 后端尽快下载并转存到你们自己的对象存储
 
 ## 4. 接口总览
 
@@ -110,8 +128,8 @@ GET /healthz
 ### 请求示例：curl
 
 ```bash
-curl -X POST "https://your-pdf-service.example.com/v1/pdf-jobs" \
-  -H "X-API-Token: YOUR_TOKEN" \
+curl -X POST "http://43.160.205.161/v1/pdf-jobs" \
+  -H "X-API-Token: Jiumiao20260325" \
   -F "file=@example.pdf" \
   -F "title=2026 Q1 行业分析" \
   -F "instructions=请生成适合管理层汇报的中文 PDF" \
@@ -134,10 +152,10 @@ async function createPdfJob() {
   form.append("deck_format", "detailed_deck");
   form.append("deck_length", "default");
 
-  const response = await fetch("https://your-pdf-service.example.com/v1/pdf-jobs", {
+  const response = await fetch("http://43.160.205.161/v1/pdf-jobs", {
     method: "POST",
     headers: {
-      "X-API-Token": process.env.NOTEBOOKLM_PDF_TOKEN || "",
+      "X-API-Token": process.env.NOTEBOOKLM_PDF_TOKEN || "Jiumiao20260325",
       ...form.getHeaders(),
     },
     body: form,
@@ -210,8 +228,8 @@ GET /v1/pdf-jobs/{job_id}
 ### 请求示例
 
 ```bash
-curl "https://your-pdf-service.example.com/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc" \
-  -H "X-API-Token: YOUR_TOKEN"
+curl "http://43.160.205.161/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc" \
+  -H "X-API-Token: Jiumiao20260325"
 ```
 
 ### 返回结构
@@ -242,7 +260,7 @@ curl "https://your-pdf-service.example.com/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21
 - `download_url`
   仅在 `completed` 时有值
 - `error_code`
-  失败时的稳定错误码
+  失败时的错误分类码
 - `error_message`
   失败时的辅助说明
 - `created_at`
@@ -253,6 +271,14 @@ curl "https://your-pdf-service.example.com/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21
   开始执行时间
 - `finished_at`
   终态时间
+
+### 404 场景
+
+当任务不存在，或者任务记录已经超过保留期被清理时，会返回：
+
+```json
+{"detail":"Job not found"}
+```
 
 ## 7. 任务状态定义
 
@@ -312,8 +338,16 @@ POST /v1/pdf-jobs/{job_id}/cancel
 ### 请求示例
 
 ```bash
-curl -X POST "https://your-pdf-service.example.com/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc/cancel" \
-  -H "X-API-Token: YOUR_TOKEN"
+curl -X POST "http://43.160.205.161/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc/cancel" \
+  -H "X-API-Token: Jiumiao20260325"
+```
+
+### 404 场景
+
+如果 `job_id` 不存在，或者任务记录已经过期被清理，会返回：
+
+```json
+{"detail":"Job not found"}
 ```
 
 ## 9. 下载结果接口
@@ -329,6 +363,16 @@ curl -X POST "https://your-pdf-service.example.com/v1/pdf-jobs/6f4f8d4d5f164b52a
 }
 ```
 
+注意：`download_url` 可能是完整绝对地址，也可能是相对路径：
+
+```json
+{
+  "download_url": "/downloads/xxxxx"
+}
+```
+
+当服务端配置了公开访问前缀时，返回绝对地址；未配置时，返回相对路径。SaaS 接入方应兼容这两种形式。
+
 你的 SaaS 可以：
 
 1. 由后端服务端下载 PDF
@@ -338,8 +382,23 @@ curl -X POST "https://your-pdf-service.example.com/v1/pdf-jobs/6f4f8d4d5f164b52a
 
 - 下载地址有 TTL，会过期
 - 过期后返回 404
+- 下载接口不要求 `X-API-Token`
 - 不要把这个链接当永久资源地址保存
 - 如果业务上要长期保留，建议 SaaS 自己下载后转存到你们自己的对象存储
+
+### 404 场景
+
+以下情况会返回 404：
+
+- 下载 token 不存在
+- 下载 token 已过期
+- 服务端已清理对应文件
+
+典型返回：
+
+```json
+{"detail":"Download not found"}
+```
 
 ## 10. 推荐的对接时序
 
@@ -361,6 +420,12 @@ curl -X POST "https://your-pdf-service.example.com/v1/pdf-jobs/6f4f8d4d5f164b52a
 - `finished_at`
 - `error_code`
 - `error_message`
+
+原因：
+
+- 服务端任务记录不是永久保存
+- 下载链接不是永久保存
+- 你们不能把服务端当作长期任务档案库
 
 ### 步骤 3：开始轮询
 
@@ -461,6 +526,12 @@ SaaS 配置的 `X-API-Token` 错了。
 - `processing_failed`
 - `queue_expired`
 
+说明：
+
+- 这些值适合作为错误分类使用
+- 新版本可能补充新的错误码
+- `error_message` 适合日志和排障，不适合作为程序分支判断依据
+
 建议处理：
 
 - `auth_expired`
@@ -475,6 +546,31 @@ SaaS 配置的 `X-API-Token` 错了。
   记录并人工排查
 - `queue_expired`
   说明排队过久，可选择重新发起
+
+#### `404 Job not found`
+
+含义：
+
+- `job_id` 写错
+- 任务记录已过保留期
+
+处理：
+
+- 视为任务已不可恢复查询
+- 你们自己的业务系统应以自有数据库记录为准
+
+#### `404 Download not found`
+
+含义：
+
+- 下载链接已过期
+- 下载 token 无效
+- 服务端已经清理文件
+
+处理：
+
+- 不要重试同一个下载 URL 很多次
+- 如果业务上必须保留结果，应该在任务完成后立即转存
 
 ## 13. 建议你们前端展示的状态文案
 
