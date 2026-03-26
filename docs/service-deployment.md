@@ -38,7 +38,7 @@
 - Linux 64 位
 - 能访问 `notebooklm.google.com`
 
-如果你后续排队任务很多，磁盘要适当加大，因为排队时源文件会先落本地。
+如果你后续排队任务很多，磁盘要适当加大，因为排队时多个源文件会先落本地。
 
 ## 3. 推荐的目录结构
 
@@ -358,9 +358,10 @@ curl https://your-pdf-service.example.com/healthz
 ```bash
 curl -X POST "https://your-pdf-service.example.com/v1/pdf-jobs" \
   -H "X-API-Token: replace-with-a-long-random-secret" \
-  -F "file=@example.pdf" \
+  -F "files=@example.pdf" \
+  -F "files=@appendix.docx" \
   -F "title=服务器联调测试" \
-  -F "instructions=请输出适合汇报的中文 PDF"
+  -F "instructions=请基于全部材料输出适合汇报的中文 PDF"
 ```
 
 ### 14.3 查询任务状态
@@ -372,7 +373,7 @@ curl "https://your-pdf-service.example.com/v1/pdf-jobs/<job_id>" \
 
 ### 14.4 下载文件
 
-成功后拿 `download_url` 直接下载。
+成功后拿 `download_url` 直接下载。当前结果文件为 `.pdf`。
 
 ## 15. 生产维护建议
 
@@ -449,7 +450,7 @@ sudo systemctl restart notebooklm-pdf.service
 - Redis 已安装并开机自启
 - 服务能正常启动
 - `/healthz` 返回 `auth_configured = true`
-- 能成功提一个真实 PDF 任务
+- 能成功提一个真实多文件任务
 - 能拿到 `download_url`
 - 下载链接可用且会过期
 - systemd 能自动拉起服务

@@ -19,11 +19,13 @@ from notebooklm.service.store import InMemoryJobStore
 class FakeProcessor:
     def __init__(self):
         self.started_jobs: list[str] = []
+        self.started_source_counts: list[int] = []
         self.allow_finish = threading.Event()
         self.fail = False
 
     async def process(self, job, on_stage):
         self.started_jobs.append(job.job_id)
+        self.started_source_counts.append(job.source_count)
         notebook_id = f"nb-{job.job_id}"
         await on_stage(JobStatus.CREATING_NOTEBOOK, {"notebook_id": notebook_id})
         await on_stage(JobStatus.UPLOADING_SOURCE, {"notebook_id": notebook_id})
@@ -34,7 +36,7 @@ class FakeProcessor:
         if self.fail:
             raise RuntimeError("boom")
         await on_stage(JobStatus.DOWNLOADING_PDF, {"notebook_id": notebook_id})
-        output = Path(job.input_path).with_suffix(".pdf")
+        output = Path(job.input_paths[0]).with_suffix(".pdf")
         output.write_bytes(b"%PDF-1.4 fake")
         return notebook_id, output
 
@@ -71,11 +73,16 @@ def _headers():
     return {"X-API-Token": "secret"}
 
 
-def _create_job(client: TestClient, filename: str = "source.pdf"):
+def _create_job(client: TestClient, filenames: list[str] | None = None, *, use_legacy_field: bool = False):
+    filenames = filenames or ["source.pdf"]
+    fields = []
+    field_name = "file" if use_legacy_field else "files"
+    for filename in filenames:
+        fields.append((field_name, (filename, b"hello", "application/pdf")))
     return client.post(
         "/v1/pdf-jobs",
         headers=_headers(),
-        files={"file": (filename, b"hello", "application/pdf")},
+        files=fields,
     )
 
 
@@ -103,7 +110,7 @@ def test_jobs_are_queued_and_processed_in_order(service_setup):
     app, _store, processor = service_setup
     with TestClient(app) as client:
         first = _create_job(client)
-        second = _create_job(client, "second.pdf")
+        second = _create_job(client, ["second.pdf"])
 
         assert first.status_code == 200
         assert second.status_code == 200
@@ -122,11 +129,40 @@ def test_jobs_are_queued_and_processed_in_order(service_setup):
         assert processor.started_jobs[:2] == [first_job, second_job]
 
 
+def test_create_job_accepts_multiple_files(service_setup):
+    app, _store, processor = service_setup
+    with TestClient(app) as client:
+        created = _create_job(client, ["part1.pdf", "part2.docx", "part3.md"])
+
+        assert created.status_code == 200
+        payload = created.json()
+        assert payload["source_count"] == 3
+        assert payload["output_format"] == "pdf"
+
+        job = client.get(f"/v1/pdf-jobs/{payload['job_id']}", headers=_headers()).json()
+        assert job["source_count"] == 3
+        assert job["filenames"] == ["part1.pdf", "part2.docx", "part3.md"]
+
+        processor.allow_finish.set()
+        final = _wait_for_status(client, payload["job_id"], JobStatus.COMPLETED.value)
+        assert final["output_format"] == "pdf"
+        assert processor.started_source_counts == [3]
+
+
+def test_legacy_single_file_field_still_supported(service_setup):
+    app, _store, _processor = service_setup
+    with TestClient(app) as client:
+        created = _create_job(client, ["legacy.pdf"], use_legacy_field=True)
+
+        assert created.status_code == 200
+        assert created.json()["source_count"] == 1
+
+
 def test_cancel_queued_job_removes_it_from_queue(service_setup):
     app, _store, processor = service_setup
     with TestClient(app) as client:
         _create_job(client)
-        second = _create_job(client, "second.pdf")
+        second = _create_job(client, ["second.pdf"])
         second_job = second.json()["job_id"]
 
         response = client.post(f"/v1/pdf-jobs/{second_job}/cancel", headers=_headers())
@@ -158,8 +194,8 @@ def test_queue_full_returns_429(service_setup):
     app, _store, _processor = service_setup
     with TestClient(app) as client:
         first = _create_job(client)
-        second = _create_job(client, "second.pdf")
-        third = _create_job(client, "third.pdf")
+        second = _create_job(client, ["second.pdf"])
+        third = _create_job(client, ["third.pdf"])
 
         assert first.status_code == 200
         assert second.status_code == 200
@@ -176,10 +212,13 @@ def test_completed_job_returns_download_url(service_setup):
         final = _wait_for_status(client, job_id, JobStatus.COMPLETED.value)
         assert final["status"] == JobStatus.COMPLETED.value
         assert final["download_url"].startswith("http://testserver/downloads/")
+        assert final["output_format"] == "pdf"
 
         download = client.get(final["download_url"])
         assert download.status_code == 200
-        assert download.headers["content-type"].startswith("application/pdf")
+        assert download.headers["content-type"].startswith(
+            "application/pdf"
+        )
 
 
 def test_expired_download_token_is_rejected(service_setup):

@@ -1,4 +1,4 @@
-"""Shared models for the NotebookLM PDF service."""
+"""Shared models for the NotebookLM slide deck service."""
 
 from __future__ import annotations
 
@@ -41,13 +41,14 @@ class JobRecord:
 
     job_id: str
     title: str
-    filename: str
-    input_path: str
+    filenames: list[str]
+    input_paths: list[str]
     status: str
     instructions: str | None
     language: str | None
     deck_format: str
     deck_length: str
+    output_format: str
     created_at: str
     updated_at: str
     started_at: str | None = None
@@ -64,24 +65,26 @@ class JobRecord:
         *,
         job_id: str,
         title: str,
-        filename: str,
-        input_path: str,
+        filenames: list[str],
+        input_paths: list[str],
         instructions: str | None,
         language: str | None,
         deck_format: str,
         deck_length: str,
+        output_format: str,
     ) -> "JobRecord":
         now = utc_now().isoformat()
         return cls(
             job_id=job_id,
             title=title,
-            filename=filename,
-            input_path=input_path,
+            filenames=filenames,
+            input_paths=input_paths,
             status=JobStatus.QUEUED.value,
             instructions=instructions,
             language=language,
             deck_format=deck_format,
             deck_length=deck_length,
+            output_format=output_format,
             created_at=now,
             updated_at=now,
         )
@@ -91,8 +94,12 @@ class JobRecord:
         return self.status in {status.value for status in TERMINAL_STATUSES}
 
     @property
-    def input_file(self) -> Path:
-        return Path(self.input_path)
+    def input_files(self) -> list[Path]:
+        return [Path(path) for path in self.input_paths]
+
+    @property
+    def source_count(self) -> int:
+        return len(self.input_paths)
 
     def update_timestamp(self) -> None:
         self.updated_at = utc_now().isoformat()
@@ -102,7 +109,13 @@ class JobRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "JobRecord":
-        return cls(**data)
+        normalized = dict(data)
+        if "filenames" not in normalized and "filename" in normalized:
+            normalized["filenames"] = [normalized.pop("filename")]
+        if "input_paths" not in normalized and "input_path" in normalized:
+            normalized["input_paths"] = [normalized.pop("input_path")]
+        normalized.setdefault("output_format", "pdf")
+        return cls(**normalized)
 
 
 @dataclass
@@ -127,5 +140,3 @@ class DownloadEntry:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DownloadEntry":
         return cls(**data)
-
-

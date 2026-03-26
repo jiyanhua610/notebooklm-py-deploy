@@ -30,6 +30,8 @@ class CreateJobResponse(BaseModel):
     status: str
     queue_position: int
     created_at: str
+    source_count: int
+    output_format: str
 
 
 class JobResponse(BaseModel):
@@ -43,6 +45,9 @@ class JobResponse(BaseModel):
     updated_at: str
     started_at: str | None = None
     finished_at: str | None = None
+    source_count: int
+    filenames: list[str]
+    output_format: str
 
 
 class HealthResponse(BaseModel):
@@ -95,7 +100,8 @@ def create_app(
 
     @app.post("/v1/pdf-jobs", response_model=CreateJobResponse, dependencies=[Depends(require_api_token)])
     async def create_job(
-        file: UploadFile = File(...),
+        files: list[UploadFile] | None = File(default=None),
+        file: UploadFile | None = File(default=None),
         title: str | None = Form(default=None),
         instructions: str | None = Form(default=None),
         language: str | None = Form(default=None),
@@ -107,6 +113,10 @@ def create_app(
         if deck_length not in {"default", "short"}:
             raise HTTPException(status_code=422, detail="Invalid deck_length")
 
+        uploads = _collect_uploads(files, file)
+        if not uploads:
+            raise HTTPException(status_code=422, detail="At least one file is required")
+
         active_job_id = await service_store.get_active_job_id()
         current_queue_length = await service_store.queue_length()
         total_pending = current_queue_length + (1 if active_job_id else 0)
@@ -114,20 +124,21 @@ def create_app(
             raise HTTPException(status_code=429, detail={"error_code": "queue_full"})
 
         job_id = uuid4().hex
-        filename = file.filename or "upload"
-        resolved_title = (title or Path(filename).stem or "upload").strip()
-        input_path = service_settings.temp_dir / f"{job_id}-{Path(filename).name}"
-        await _save_upload(file, input_path)
+        filenames = [upload.filename or f"upload-{index}" for index, upload in enumerate(uploads, start=1)]
+        resolved_title = (title or Path(filenames[0]).stem or "upload").strip()
+        input_dir = (service_settings.temp_dir / job_id).resolve()
+        input_paths = await _save_uploads(uploads, input_dir)
 
         job = JobRecord.create(
             job_id=job_id,
             title=resolved_title,
-            filename=filename,
-            input_path=str(input_path.resolve()),
+            filenames=filenames,
+            input_paths=input_paths,
             instructions=instructions,
             language=(language.strip() if language and language.strip() else None),
             deck_format=deck_format,
             deck_length=deck_length,
+            output_format="pdf",
         )
         await service_store.save_job(job)
         await service_store.enqueue(job.job_id)
@@ -138,6 +149,8 @@ def create_app(
             status=job.status,
             queue_position=(queue_position or 0) + 1,
             created_at=job.created_at,
+            source_count=job.source_count,
+            output_format=job.output_format,
         )
 
     @app.get("/v1/pdf-jobs/{job_id}", response_model=JobResponse, dependencies=[Depends(require_api_token)])
@@ -165,7 +178,7 @@ def create_app(
                 error_code="cancelled",
                 error_message="Job cancelled before execution",
             )
-            await _cleanup_input_file(job)
+            await _cleanup_input_files(job)
         elif job.status not in {status.value for status in TERMINAL_STATUSES}:
             job.status = JobStatus.CANCEL_REQUESTED.value
             job.update_timestamp()
@@ -183,7 +196,11 @@ def create_app(
             raise HTTPException(status_code=404, detail="Download not found")
         if not entry.path.exists():
             raise HTTPException(status_code=404, detail="Download file missing")
-        return FileResponse(entry.path, media_type="application/pdf", filename=entry.path.name)
+        return FileResponse(
+            entry.path,
+            media_type=_media_type_for_path(entry.path),
+            filename=entry.path.name,
+        )
 
     @app.get("/healthz", response_model=HealthResponse)
     async def healthz() -> HealthResponse:
@@ -213,6 +230,16 @@ async def _save_upload(file: UploadFile, destination: Path) -> None:
     await file.close()
 
 
+async def _save_uploads(files: list[UploadFile], destination_dir: Path) -> list[str]:
+    saved_paths: list[str] = []
+    for index, upload in enumerate(files, start=1):
+        filename = upload.filename or f"upload-{index}"
+        destination = destination_dir / f"{index:02d}-{Path(filename).name}"
+        await _save_upload(upload, destination)
+        saved_paths.append(str(destination.resolve()))
+    return saved_paths
+
+
 async def _job_response(store: JobStore, job: JobRecord) -> JobResponse:
     queue_position = None
     if job.status == JobStatus.QUEUED.value:
@@ -229,6 +256,9 @@ async def _job_response(store: JobStore, job: JobRecord) -> JobResponse:
         updated_at=job.updated_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
+        source_count=job.source_count,
+        filenames=job.filenames,
+        output_format=job.output_format,
     )
 
 
@@ -269,7 +299,7 @@ async def _process_job(app: FastAPI, job_id: str) -> None:
                 error_code="queue_expired",
                 error_message="Job expired while waiting in queue",
             )
-            await _cleanup_input_file(job)
+            await _cleanup_input_files(job)
             return
 
         if job.started_at is None:
@@ -316,7 +346,7 @@ async def _process_job(app: FastAPI, job_id: str) -> None:
         if latest is not None:
             notebook_id = notebook_id or latest.notebook_id
         await processor.cleanup_notebook(notebook_id)
-        await _cleanup_input_file(job)
+        await _cleanup_input_files(job)
         if lock_task is not None:
             lock_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -326,11 +356,11 @@ async def _process_job(app: FastAPI, job_id: str) -> None:
 
 async def _publish_download(app: FastAPI, job: JobRecord, output_path: Path | None) -> str:
     if output_path is None or not output_path.exists():
-        raise FileNotFoundError("Generated PDF not found")
+        raise FileNotFoundError(f"Generated {job.output_format.upper()} not found")
 
     settings: ServiceSettings = app.state.settings
     store: JobStore = app.state.store
-    final_path = (settings.downloads_dir / f"{job.job_id}.pdf").resolve()
+    final_path = (settings.downloads_dir / f"{job.job_id}.{job.output_format}").resolve()
     final_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.replace(final_path)
 
@@ -395,9 +425,13 @@ async def _set_job_terminal(
     await store.save_job(job)
 
 
-async def _cleanup_input_file(job: JobRecord) -> None:
-    with contextlib.suppress(OSError):
-        job.input_file.unlink()
+async def _cleanup_input_files(job: JobRecord) -> None:
+    for input_file in job.input_files:
+        with contextlib.suppress(OSError):
+            input_file.unlink()
+    if job.input_files:
+        with contextlib.suppress(OSError):
+            job.input_files[0].parent.rmdir()
 
 
 async def _renew_lock_loop(store: JobStore, settings: ServiceSettings, job_id: str) -> None:
@@ -434,3 +468,19 @@ def _map_error_code(exc: Exception) -> str:
     return "processing_failed"
 
 
+def _collect_uploads(
+    files: list[UploadFile] | None,
+    file: UploadFile | None,
+) -> list[UploadFile]:
+    uploads: list[UploadFile] = []
+    if files:
+        uploads.extend(files)
+    if file is not None:
+        uploads.append(file)
+    return uploads
+
+
+def _media_type_for_path(path: Path) -> str:
+    if path.suffix.lower() == ".pdf":
+        return "application/pdf"
+    return "application/octet-stream"

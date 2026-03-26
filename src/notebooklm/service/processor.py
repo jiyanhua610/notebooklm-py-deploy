@@ -29,16 +29,33 @@ class NotebookLMPdfProcessor:
             await on_stage(JobStatus.CREATING_NOTEBOOK, None)
             notebook = await client.notebooks.create(self._build_notebook_title(job))
 
-            await on_stage(JobStatus.UPLOADING_SOURCE, {"notebook_id": notebook.id})
-            source = await client.sources.add_file(notebook.id, job.input_path)
+            for index, input_path in enumerate(job.input_paths, start=1):
+                await on_stage(
+                    JobStatus.UPLOADING_SOURCE,
+                    {
+                        "notebook_id": notebook.id,
+                        "current_file": job.filenames[index - 1],
+                        "current_index": index,
+                        "total_files": job.source_count,
+                    },
+                )
+                source = await client.sources.add_file(notebook.id, input_path)
 
-            await on_stage(JobStatus.WAITING_SOURCE_READY, {"notebook_id": notebook.id})
-            await self._retryable(
-                client.sources.wait_until_ready,
-                notebook.id,
-                source.id,
-                timeout=self._settings.source_wait_timeout_seconds,
-            )
+                await on_stage(
+                    JobStatus.WAITING_SOURCE_READY,
+                    {
+                        "notebook_id": notebook.id,
+                        "current_file": job.filenames[index - 1],
+                        "current_index": index,
+                        "total_files": job.source_count,
+                    },
+                )
+                await self._retryable(
+                    client.sources.wait_until_ready,
+                    notebook.id,
+                    source.id,
+                    timeout=self._settings.source_wait_timeout_seconds,
+                )
 
             await on_stage(JobStatus.GENERATING_PDF, {"notebook_id": notebook.id})
             status = await client.artifacts.generate_slide_deck(
@@ -58,12 +75,12 @@ class NotebookLMPdfProcessor:
             )
 
             await on_stage(JobStatus.DOWNLOADING_PDF, {"notebook_id": notebook.id})
-            output_path = (self._settings.temp_dir / f"{job.job_id}.pdf").resolve()
+            output_path = (self._settings.temp_dir / f"{job.job_id}.{job.output_format}").resolve()
             await self._retryable(
                 client.artifacts.download_slide_deck,
                 notebook.id,
                 str(output_path),
-                output_format="pdf",
+                output_format=job.output_format,
             )
             return notebook.id, output_path
 
@@ -107,4 +124,3 @@ class NotebookLMPdfProcessor:
             "short": SlideDeckLength.SHORT,
         }
         return mapping.get(value)
-

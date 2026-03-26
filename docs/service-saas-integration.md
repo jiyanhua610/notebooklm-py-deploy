@@ -13,8 +13,8 @@
 
 这个微服务负责做一件事：
 
-- 接收一个用户上传的文件
-- 将它提交给 NotebookLM 生成 slide deck
+- 接收一个或多个用户上传的文件
+- 将它们提交给 NotebookLM 生成 slide deck
 - 下载生成后的 PDF
 - 返回一个任务状态查询接口和一个临时下载链接
 
@@ -117,8 +117,10 @@ GET /healthz
 
 字段如下：
 
+- `files`
+  必填，用户上传的文件，支持重复传多个 `files` 字段
 - `file`
-  必填，用户上传的文件
+  兼容旧版单文件调用，仍可用，但不再推荐新接入使用
 - `title`
   可选，任务标题
 - `instructions`
@@ -142,9 +144,10 @@ GET /healthz
 ```bash
 curl -X POST "http://43.160.205.161/v1/pdf-jobs" \
   -H "X-API-Token: Jiumiao20260325" \
-  -F "file=@example.pdf" \
+  -F "files=@example.pdf" \
+  -F "files=@appendix.docx" \
   -F "title=2026 Q1 行业分析" \
-  -F "instructions=请生成适合管理层汇报的中文 PDF" \
+  -F "instructions=请基于全部材料生成适合管理层汇报的中文 PDF" \
   -F "deck_format=detailed_deck" \
   -F "deck_length=default"
 ```
@@ -156,10 +159,11 @@ curl -X POST "http://43.160.205.161/v1/pdf-jobs" \
 ```bash
 curl -X POST "http://43.160.205.161/v1/pdf-jobs" \
   -H "X-API-Token: Jiumiao20260325" \
-  -F "file=@example.pdf" \
+  -F "files=@example.pdf" \
+  -F "files=@appendix.docx" \
   -F "title=English Version" \
   -F "language=en" \
-  -F "instructions=Generate an English PDF suitable for presentation"
+  -F "instructions=Generate an English PDF suitable for presentation based on all uploaded files"
 ```
 
 ### 请求示例：Node.js
@@ -171,9 +175,10 @@ import fetch from "node-fetch";
 
 async function createPdfJob() {
   const form = new FormData();
-  form.append("file", fs.createReadStream("./example.pdf"));
+  form.append("files", fs.createReadStream("./example.pdf"));
+  form.append("files", fs.createReadStream("./appendix.docx"));
   form.append("title", "2026 Q1 行业分析");
-  form.append("instructions", "请生成适合管理层汇报的中文 PDF");
+  form.append("instructions", "请基于全部材料生成适合管理层汇报的中文 PDF");
   // 不传 language 时，服务默认使用 zh_Hans（简体中文）
   // form.append("language", "en");
   form.append("deck_format", "detailed_deck");
@@ -203,7 +208,9 @@ async function createPdfJob() {
   "job_id": "6f4f8d4d5f164b52a7f8f8c21f8f3abc",
   "status": "queued",
   "queue_position": 1,
-  "created_at": "2026-03-18T12:00:00+00:00"
+  "created_at": "2026-03-18T12:00:00+00:00",
+  "source_count": 2,
+  "output_format": "pdf"
 }
 ```
 
@@ -217,6 +224,10 @@ async function createPdfJob() {
   当前排队位置，`1` 代表正在队列头部等待或即将执行
 - `created_at`
   任务创建时间，UTC ISO 8601
+- `source_count`
+  本次任务上传的文件数量
+- `output_format`
+  当前固定返回 `pdf`
 
 ### 错误返回
 
@@ -272,7 +283,10 @@ curl "http://43.160.205.161/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc" \
   "created_at": "2026-03-18T12:00:00+00:00",
   "updated_at": "2026-03-18T12:03:20+00:00",
   "started_at": "2026-03-18T12:00:05+00:00",
-  "finished_at": null
+  "finished_at": null,
+  "source_count": 2,
+  "filenames": ["example.pdf", "appendix.docx"],
+  "output_format": "pdf"
 }
 ```
 
@@ -298,6 +312,10 @@ curl "http://43.160.205.161/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc" \
   开始执行时间
 - `finished_at`
   终态时间
+- `filenames`
+  本次上传的原始文件名列表
+- `output_format`
+  当前固定返回 `pdf`
 
 ### 404 场景
 
@@ -378,6 +396,8 @@ curl -X POST "http://43.160.205.161/v1/pdf-jobs/6f4f8d4d5f164b52a7f8f8c21f8f3abc
 ```
 
 ## 9. 下载结果接口
+
+说明：当前下载产物为 `.pdf`。
 
 ### 使用方式
 
@@ -610,7 +630,7 @@ SaaS 配置的 `X-API-Token` 错了。
 - `creating_notebook` -> 正在创建工作区
 - `uploading_source` -> 正在上传材料
 - `waiting_source_ready` -> 正在解析材料
-- `generating_pdf` -> 正在生成演示文稿
+- `generating_pdf` -> 正在生成演示文稿（当前实际输出为 PDF）
 - `waiting_generation` -> 正在等待 NotebookLM 完成
 - `downloading_pdf` -> 正在导出 PDF
 - `completed` -> 已完成

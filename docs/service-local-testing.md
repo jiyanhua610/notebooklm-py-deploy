@@ -6,10 +6,10 @@
 
 这个服务会做一条固定链路：
 
-1. 你的 SaaS 或本地测试程序上传一个文件
+1. 你的 SaaS 或本地测试程序上传一个或多个文件
 2. 服务把任务放进内部队列
 3. 服务按顺序一次只执行 1 个任务
-4. 服务调用 NotebookLM：创建 notebook、上传文件、生成 slide deck、下载 PDF
+4. 服务调用 NotebookLM：创建 notebook、逐个上传文件、生成 slide deck、下载 PDF
 5. 服务返回一个任务 ID
 6. 你轮询任务状态
 7. 成功后拿到一个临时下载地址，下载 PDF
@@ -268,12 +268,15 @@ curl http://127.0.0.1:8000/healthz
 
 ## 10. 提交一个测试任务
 
-准备一个小一点的 PDF，比如 `example.pdf`。
+说明：推荐使用重复的 `files` 字段上传多个文件；历史单文件字段 `file` 仍兼容，但新调用建议统一改成 `files`。
+
+准备一个或多个小一点的源文件，比如 `example.pdf`、`appendix.docx`。
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/v1/pdf-jobs" \
   -H "X-API-Token: dev-secret" \
-  -F "file=@example.pdf" \
+  -F "files=@example.pdf" \
+  -F "files=@appendix.docx" \
   -F "title=测试任务" \
   -F "instructions=请生成结构清晰的中文演示文稿" \
   -F "deck_format=detailed_deck" \
@@ -287,7 +290,9 @@ curl -X POST "http://127.0.0.1:8000/v1/pdf-jobs" \
   "job_id": "a1b2c3d4...",
   "status": "queued",
   "queue_position": 1,
-  "created_at": "2026-03-18T..."
+  "created_at": "2026-03-18T...",
+  "source_count": 2,
+  "output_format": "pdf"
 }
 ```
 
@@ -327,13 +332,16 @@ curl "http://127.0.0.1:8000/v1/pdf-jobs/<job_id>" \
   "created_at": "...",
   "updated_at": "...",
   "started_at": "...",
-  "finished_at": "..."
+  "finished_at": "...",
+  "source_count": 2,
+  "filenames": ["example.pdf", "appendix.docx"],
+  "output_format": "pdf"
 }
 ```
 
-## 12. 下载 PDF
+## 12. 下载结果文件
 
-拿到 `download_url` 后直接访问即可：
+拿到 `download_url` 后直接访问即可。当前实际下载结果为 `.pdf`：
 
 ```bash
 curl -L -o result.pdf "http://127.0.0.1:8000/downloads/xxxxx"
