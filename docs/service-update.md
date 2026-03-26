@@ -203,6 +203,8 @@ sudo systemctl reload nginx
 3. 覆盖服务器上的认证文件
 4. 重启服务
 
+**详细步骤请参考：[登录同步指南](file:///d:/notebooklm-py/docs/login-sync-guide.md)**
+
 例如：
 
 ```bash

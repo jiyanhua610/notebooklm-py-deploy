@@ -138,7 +138,7 @@ notebooklm login
 你可以复制成一个单独文件，比如：
 
 ```bash
-scp ~/.notebooklm/storage_state.json user@your-server:/opt/notebooklm-py/env/storage_state.json
+scp C:\Users\Mayn\.notebooklm\storage_state.json root@43.160.205.161:/opt/notebooklm-py/env/storage_state.json
 ```
 
 ### 7.4 安全建议
@@ -178,7 +178,7 @@ NOTEBOOKLM_SERVICE_SOURCE_WAIT_TIMEOUT_SECONDS=300
 NOTEBOOKLM_SERVICE_GENERATION_WAIT_TIMEOUT_SECONDS=1800
 NOTEBOOKLM_SERVICE_RETRY_ATTEMPTS=2
 NOTEBOOKLM_SERVICE_RETRY_DELAY_SECONDS=2
-NOTEBOOKLM_SERVICE_PUBLIC_BASE_URL=https://your-pdf-service.example.com
+NOTEBOOKLM_SERVICE_PUBLIC_BASE_URL=http://43.160.205.161:8000
 NOTEBOOKLM_STORAGE_PATH=/opt/notebooklm-py/env/storage_state.json
 ```
 
@@ -398,6 +398,8 @@ curl "https://your-pdf-service.example.com/v1/pdf-jobs/<job_id>" \
 1. 在本地重新执行 `notebooklm login`
 2. 重新上传新的 `storage_state.json`
 3. 重启服务
+
+**详细步骤请参考：[登录同步指南](file:///d:/notebooklm-py/docs/login-sync-guide.md)**
 
 ```bash
 sudo systemctl restart notebooklm-pdf.service
