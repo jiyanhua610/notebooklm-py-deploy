@@ -24,6 +24,11 @@ class ServiceSettings:
     downloads_dir: Path = Path(
         os.getenv("NOTEBOOKLM_SERVICE_DOWNLOADS_DIR", ".notebooklm-service/downloads")
     )
+    storage_path: Path | None = (
+        Path(os.environ["NOTEBOOKLM_STORAGE_PATH"])
+        if "NOTEBOOKLM_STORAGE_PATH" in os.environ
+        else None
+    )
     download_ttl_seconds: int = _int_env("NOTEBOOKLM_SERVICE_DOWNLOAD_TTL_SECONDS", 3600)
     job_retention_seconds: int = _int_env("NOTEBOOKLM_SERVICE_JOB_RETENTION_SECONDS", 86400)
     lock_ttl_seconds: int = _int_env("NOTEBOOKLM_SERVICE_LOCK_TTL_SECONDS", 120)

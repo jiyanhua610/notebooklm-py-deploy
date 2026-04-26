@@ -28,7 +28,8 @@ class NotebookLMPdfProcessor:
         self._settings = settings
 
     async def process(self, job: Any, on_stage: StageCallback) -> tuple[str | None, Path | None]:
-        async with await NotebookLMClient.from_storage() as client:
+        storage_path = str(self._settings.storage_path) if self._settings.storage_path else None
+        async with await NotebookLMClient.from_storage(path=storage_path) as client:
             logger.info("Job %s: Creating NotebookLM notebook...", job.job_id)
             await on_stage(JobStatus.CREATING_NOTEBOOK, None)
             notebook = await client.notebooks.create(self._build_notebook_title(job))
