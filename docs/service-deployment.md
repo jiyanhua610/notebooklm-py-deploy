@@ -2,6 +2,10 @@
 
 这份文档讲的是最实用的一种部署方式：把 NotebookLM PDF 微服务部署到一台独立服务器上，供你的 SaaS 内部调用。
 
+> [!TIP]
+> **Windows 用户注意**：如果您计划在 Windows Server 上部署，请参考专门的 [Windows 部署指南](file:///d:/notebooklm-py/docs/service-deployment-windows.md)。
+
+
 目标是：
 
 - 一台服务器

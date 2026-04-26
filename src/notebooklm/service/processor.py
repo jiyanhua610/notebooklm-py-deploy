@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -15,6 +16,8 @@ from notebooklm.types import SlideDeckFormat, SlideDeckLength
 from .config import ServiceSettings
 from .models import JobStatus
 
+logger = logging.getLogger(__name__)
+
 StageCallback = Callable[[JobStatus, dict[str, Any] | None], Awaitable[None]]
 
 
@@ -26,26 +29,31 @@ class NotebookLMPdfProcessor:
 
     async def process(self, job: Any, on_stage: StageCallback) -> tuple[str | None, Path | None]:
         async with await NotebookLMClient.from_storage() as client:
+            logger.info("Job %s: Creating NotebookLM notebook...", job.job_id)
             await on_stage(JobStatus.CREATING_NOTEBOOK, None)
             notebook = await client.notebooks.create(self._build_notebook_title(job))
+            logger.info("Job %s: Notebook created with ID: %s", job.job_id, notebook.id)
 
             for index, input_path in enumerate(job.input_paths, start=1):
+                filename = job.filenames[index - 1]
+                logger.info("Job %s: Uploading source [%d/%d]: %s", job.job_id, index, job.source_count, filename)
                 await on_stage(
                     JobStatus.UPLOADING_SOURCE,
                     {
                         "notebook_id": notebook.id,
-                        "current_file": job.filenames[index - 1],
+                        "current_file": filename,
                         "current_index": index,
                         "total_files": job.source_count,
                     },
                 )
                 source = await client.sources.add_file(notebook.id, input_path)
 
+                logger.info("Job %s: Waiting for source to be ready: %s", job.job_id, filename)
                 await on_stage(
                     JobStatus.WAITING_SOURCE_READY,
                     {
                         "notebook_id": notebook.id,
-                        "current_file": job.filenames[index - 1],
+                        "current_file": filename,
                         "current_index": index,
                         "total_files": job.source_count,
                     },
@@ -55,8 +63,10 @@ class NotebookLMPdfProcessor:
                     notebook.id,
                     source.id,
                     timeout=self._settings.source_wait_timeout_seconds,
+                    label=f"source-ready-{index}",
                 )
 
+            logger.info("Job %s: All sources ready. Requesting PDF generation...", job.job_id)
             await on_stage(JobStatus.GENERATING_PDF, {"notebook_id": notebook.id})
             status = await client.artifacts.generate_slide_deck(
                 notebook.id,
@@ -66,14 +76,17 @@ class NotebookLMPdfProcessor:
                 slide_length=self._resolve_length(job.deck_length),
             )
 
+            logger.info("Job %s: Generation started (Task ID: %s). Waiting for completion...", job.job_id, status.task_id)
             await on_stage(JobStatus.WAITING_GENERATION, {"notebook_id": notebook.id})
             await self._retryable(
                 client.artifacts.wait_for_completion,
                 notebook.id,
                 status.task_id,
                 timeout=self._settings.generation_wait_timeout_seconds,
+                label="generation-complete",
             )
 
+            logger.info("Job %s: PDF generated successfully. Downloading...", job.job_id)
             await on_stage(JobStatus.DOWNLOADING_PDF, {"notebook_id": notebook.id})
             output_path = (self._settings.temp_dir / f"{job.job_id}.{job.output_format}").resolve()
             await self._retryable(
@@ -81,20 +94,24 @@ class NotebookLMPdfProcessor:
                 notebook.id,
                 str(output_path),
                 output_format=job.output_format,
+                label="download-pdf",
             )
+            logger.info("Job %s: PDF downloaded to %s", job.job_id, output_path)
             return notebook.id, output_path
 
     async def cleanup_notebook(self, notebook_id: str | None) -> None:
         if not notebook_id:
             return
         try:
+            logger.info("Cleaning up temporary notebook %s", notebook_id)
             async with await NotebookLMClient.from_storage() as client:
                 await client.notebooks.delete(notebook_id)
-        except Exception:
+        except Exception as e:
+            logger.warning("Failed to cleanup notebook %s: %s", notebook_id, e)
             return
 
     async def _retryable(
-        self, func: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
+        self, func: Callable[..., Awaitable[Any]], *args: Any, label: str = "op", **kwargs: Any
     ) -> Any:
         last_error: Exception | None = None
         for attempt in range(1, self._settings.retry_attempts + 1):
@@ -102,6 +119,10 @@ class NotebookLMPdfProcessor:
                 return await func(*args, **kwargs)
             except (NetworkError, RPCTimeoutError, RateLimitError) as exc:
                 last_error = exc
+                logger.warning(
+                    "Retryable error during '%s' (attempt %d/%d): %s",
+                    label, attempt, self._settings.retry_attempts, exc
+                )
                 if attempt >= self._settings.retry_attempts:
                     raise
                 await asyncio.sleep(self._settings.retry_delay_seconds)

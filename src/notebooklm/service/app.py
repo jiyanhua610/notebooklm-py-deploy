@@ -96,6 +96,11 @@ def create_app(
 
     async def require_api_token(x_api_token: str = Header(default="")) -> None:
         if x_api_token != service_settings.api_token:
+            logger.warning(
+                "Authentication failed: received token '%s', expected '%s'",
+                x_api_token,
+                service_settings.api_token,
+            )
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     @app.post(
@@ -116,6 +121,13 @@ def create_app(
             raise HTTPException(status_code=422, detail="Invalid deck_length")
 
         uploads = _collect_uploads(files, file)
+        logger.info(
+            "Received job creation request: title=%r, files=%r, deck_format=%r, deck_length=%r",
+            title,
+            [u.filename for u in uploads],
+            deck_format,
+            deck_length,
+        )
         if not uploads:
             raise HTTPException(status_code=422, detail="At least one file is required")
 
@@ -163,8 +175,10 @@ def create_app(
         dependencies=[Depends(require_api_token)],
     )
     async def get_job(job_id: str) -> JobResponse:
+        logger.info("Checking status for job %s", job_id)
         job = await service_store.get_job(job_id)
         if job is None:
+            logger.warning("Job %s not found during status check", job_id)
             raise HTTPException(status_code=404, detail="Job not found")
         return await _job_response(service_store, job)
 
@@ -174,8 +188,10 @@ def create_app(
         dependencies=[Depends(require_api_token)],
     )
     async def cancel_job(job_id: str) -> JobResponse:
+        logger.info("Received cancellation request for job %s", job_id)
         job = await service_store.get_job(job_id)
         if job is None:
+            logger.warning("Job %s not found during cancellation", job_id)
             raise HTTPException(status_code=404, detail="Job not found")
         if job.status == JobStatus.QUEUED.value:
             await service_store.remove_queued_job(job_id)
@@ -197,13 +213,16 @@ def create_app(
     async def download_file(token: str) -> FileResponse:
         entry = await service_store.get_download_entry(token)
         if entry is None or entry.is_expired():
+            logger.warning("Download request for invalid or expired token: %s", token)
             if entry is not None:
                 await service_store.delete_download_entry(token)
                 with contextlib.suppress(OSError):
                     entry.path.unlink()
             raise HTTPException(status_code=404, detail="Download not found")
         if not entry.path.exists():
+            logger.error("Download file missing on disk: %s", entry.path)
             raise HTTPException(status_code=404, detail="Download file missing")
+        logger.info("Serving download for file: %s (token: %s)", entry.path.name, token)
         return FileResponse(
             entry.path,
             media_type=_media_type_for_path(entry.path),
@@ -293,6 +312,7 @@ async def _process_job(app: FastAPI, job_id: str) -> None:
         return
 
     if not await store.acquire_execution_lock(job_id, settings.lock_ttl_seconds):
+        logger.debug("Job %s is already being processed by another worker", job_id)
         await store.enqueue(job_id)
         await asyncio.sleep(0.1)
         return
@@ -316,6 +336,8 @@ async def _process_job(app: FastAPI, job_id: str) -> None:
         job.update_timestamp()
         await store.save_job(job)
         lock_task = asyncio.create_task(_renew_lock_loop(store, settings, job_id))
+        
+        logger.info("Job %s: Starting execution flow...", job_id)
         notebook_id, output_path = await processor.process(
             job,
             lambda stage, payload=None: _on_stage(store, job.job_id, stage, payload),
@@ -341,7 +363,9 @@ async def _process_job(app: FastAPI, job_id: str) -> None:
             latest.finished_at = utc_now().isoformat()
             latest.update_timestamp()
             await store.save_job(latest)
+            logger.info("Job %s: Execution completed successfully", job_id)
     except Exception as exc:
+        logger.exception("Failed to process job %s", job_id)
         latest = await store.get_job(job_id) or job
         await _set_job_terminal(
             store,
