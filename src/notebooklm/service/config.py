@@ -45,4 +45,3 @@ class ServiceSettings:
     def ensure_directories(self) -> None:
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
-

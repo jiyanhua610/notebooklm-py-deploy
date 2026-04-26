@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from notebooklm import NotebookLMClient
-from notebooklm.exceptions import NetworkError, RPCTimeoutError, RateLimitError
+from notebooklm.exceptions import NetworkError, RateLimitError, RPCTimeoutError
 from notebooklm.types import SlideDeckFormat, SlideDeckLength
 
 from .config import ServiceSettings
@@ -93,7 +93,9 @@ class NotebookLMPdfProcessor:
         except Exception:
             return
 
-    async def _retryable(self, func: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any) -> Any:
+    async def _retryable(
+        self, func: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
+    ) -> Any:
         last_error: Exception | None = None
         for attempt in range(1, self._settings.retry_attempts + 1):
             try:

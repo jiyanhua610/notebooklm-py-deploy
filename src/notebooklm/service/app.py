@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .config import ServiceSettings
-from .models import DownloadEntry, JobRecord, JobStatus, TERMINAL_STATUSES, utc_now
+from .models import TERMINAL_STATUSES, DownloadEntry, JobRecord, JobStatus, utc_now
 from .processor import NotebookLMPdfProcessor
 from .store import JobStore, RedisJobStore
 
@@ -98,7 +98,9 @@ def create_app(
         if x_api_token != service_settings.api_token:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-    @app.post("/v1/pdf-jobs", response_model=CreateJobResponse, dependencies=[Depends(require_api_token)])
+    @app.post(
+        "/v1/pdf-jobs", response_model=CreateJobResponse, dependencies=[Depends(require_api_token)]
+    )
     async def create_job(
         files: list[UploadFile] | None = File(default=None),
         file: UploadFile | None = File(default=None),
@@ -124,7 +126,9 @@ def create_app(
             raise HTTPException(status_code=429, detail={"error_code": "queue_full"})
 
         job_id = uuid4().hex
-        filenames = [upload.filename or f"upload-{index}" for index, upload in enumerate(uploads, start=1)]
+        filenames = [
+            upload.filename or f"upload-{index}" for index, upload in enumerate(uploads, start=1)
+        ]
         resolved_title = (title or Path(filenames[0]).stem or "upload").strip()
         input_dir = (service_settings.temp_dir / job_id).resolve()
         input_paths = await _save_uploads(uploads, input_dir)
@@ -153,7 +157,11 @@ def create_app(
             output_format=job.output_format,
         )
 
-    @app.get("/v1/pdf-jobs/{job_id}", response_model=JobResponse, dependencies=[Depends(require_api_token)])
+    @app.get(
+        "/v1/pdf-jobs/{job_id}",
+        response_model=JobResponse,
+        dependencies=[Depends(require_api_token)],
+    )
     async def get_job(job_id: str) -> JobResponse:
         job = await service_store.get_job(job_id)
         if job is None:
@@ -207,7 +215,8 @@ def create_app(
         active_job_id = await service_store.get_active_job_id()
         queue_length = await service_store.queue_length()
         auth_configured = bool(
-            os.getenv("NOTEBOOKLM_AUTH_JSON") or os.path.exists(os.getenv("NOTEBOOKLM_STORAGE_PATH", ""))
+            os.getenv("NOTEBOOKLM_AUTH_JSON")
+            or os.path.exists(os.getenv("NOTEBOOKLM_STORAGE_PATH", ""))
         )
         return HealthResponse(
             ok=True,

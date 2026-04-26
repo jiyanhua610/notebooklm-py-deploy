@@ -72,7 +72,7 @@ class JobRecord:
         deck_format: str,
         deck_length: str,
         output_format: str,
-    ) -> "JobRecord":
+    ) -> JobRecord:
         now = utc_now().isoformat()
         return cls(
             job_id=job_id,
@@ -108,7 +108,7 @@ class JobRecord:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "JobRecord":
+    def from_dict(cls, data: dict[str, Any]) -> JobRecord:
         normalized = dict(data)
         if "filenames" not in normalized and "filename" in normalized:
             normalized["filenames"] = [normalized.pop("filename")]
@@ -138,5 +138,5 @@ class DownloadEntry:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "DownloadEntry":
+    def from_dict(cls, data: dict[str, Any]) -> DownloadEntry:
         return cls(**data)

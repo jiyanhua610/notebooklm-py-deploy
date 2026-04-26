@@ -73,7 +73,9 @@ def _headers():
     return {"X-API-Token": "secret"}
 
 
-def _create_job(client: TestClient, filenames: list[str] | None = None, *, use_legacy_field: bool = False):
+def _create_job(
+    client: TestClient, filenames: list[str] | None = None, *, use_legacy_field: bool = False
+):
     filenames = filenames or ["source.pdf"]
     fields = []
     field_name = "file" if use_legacy_field else "files"
@@ -150,12 +152,13 @@ def test_create_job_accepts_multiple_files(service_setup):
 
 
 def test_legacy_single_file_field_still_supported(service_setup):
-    app, _store, _processor = service_setup
+    app, _store, processor = service_setup
     with TestClient(app) as client:
         created = _create_job(client, ["legacy.pdf"], use_legacy_field=True)
 
         assert created.status_code == 200
         assert created.json()["source_count"] == 1
+        processor.allow_finish.set()
 
 
 def test_cancel_queued_job_removes_it_from_queue(service_setup):
@@ -191,7 +194,7 @@ def test_cancel_running_job_hides_download(service_setup):
 
 
 def test_queue_full_returns_429(service_setup):
-    app, _store, _processor = service_setup
+    app, _store, processor = service_setup
     with TestClient(app) as client:
         first = _create_job(client)
         second = _create_job(client, ["second.pdf"])
@@ -200,6 +203,7 @@ def test_queue_full_returns_429(service_setup):
         assert first.status_code == 200
         assert second.status_code == 200
         assert third.status_code == 429
+        processor.allow_finish.set()
 
 
 def test_completed_job_returns_download_url(service_setup):
@@ -216,9 +220,7 @@ def test_completed_job_returns_download_url(service_setup):
 
         download = client.get(final["download_url"])
         assert download.status_code == 200
-        assert download.headers["content-type"].startswith(
-            "application/pdf"
-        )
+        assert download.headers["content-type"].startswith("application/pdf")
 
 
 def test_expired_download_token_is_rejected(service_setup):
