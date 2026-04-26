@@ -58,6 +58,7 @@ class HealthResponse(BaseModel):
     storage_path: str | None = None
     download_ttl_seconds: int
     api_token_configured: bool
+    google_auth_ok: bool | None = None
 
 
 def create_app(
@@ -243,6 +244,20 @@ def create_app(
         storage_path = service_settings.storage_path
         auth_exists = storage_path.exists() if storage_path else False
         
+        google_auth_ok = None
+        if auth_exists:
+            try:
+                # Minimal call to verify if Google authentication is still valid
+                from notebooklm import NotebookLMClient
+                storage_str = str(storage_path) if storage_path else None
+                async with await NotebookLMClient.from_storage(path=storage_str) as client:
+                    # Just try to fetch the first notebook as a connectivity test
+                    await asyncio.wait_for(client.notebooks.list(), timeout=5.0)
+                    google_auth_ok = True
+            except Exception as e:
+                logger.warning("Google authentication verification failed: %s", e)
+                google_auth_ok = False
+
         return HealthResponse(
             ok=True,
             queue_length=queue_length,
@@ -250,7 +265,8 @@ def create_app(
             auth_configured=auth_exists,
             storage_path=str(storage_path) if storage_path else None,
             download_ttl_seconds=service_settings.download_ttl_seconds,
-            api_token_configured=service_settings.api_token != "dev-token"
+            api_token_configured=service_settings.api_token != "dev-token",
+            google_auth_ok=google_auth_ok
         )
 
     return app
