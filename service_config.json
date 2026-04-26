@@ -1,0 +1,22 @@
+{
+    "api_token": "Jiumiao20260325",
+    "redis_url": "redis://127.0.0.1:6379/0",
+    "queue_name": "notebooklm:pdf:queue",
+    "key_prefix": "notebooklm:pdf",
+    "temp_dir": "C:/notebooklm-py/runtime/tmp",
+    "downloads_dir": "C:/notebooklm-py/runtime/downloads",
+    "download_ttl_seconds": 2592000,
+    "job_retention_seconds": 2592000,
+    "lock_ttl_seconds": 120,
+    "cleanup_interval_seconds": 30,
+    "queue_poll_seconds": 1,
+    "max_queue_size": 20,
+    "queue_timeout_seconds": 3600,
+    "public_base_url": null,
+    "default_language": "zh_Hans",
+    "storage_path": "C:/notebooklm-py/app/storage_state.json",
+    "source_wait_timeout_seconds": 300,
+    "generation_wait_timeout_seconds": 900,
+    "retry_attempts": 2,
+    "retry_delay_seconds": 2
+}

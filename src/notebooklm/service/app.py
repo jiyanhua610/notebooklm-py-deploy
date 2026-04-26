@@ -65,7 +65,9 @@ def create_app(
 ) -> FastAPI:
     """Create the PDF service application."""
 
-    service_settings = settings or ServiceSettings()
+    service_settings = settings or ServiceSettings.load()
+    logger.info("Service configuration loaded (Source: %s)", 
+                "service_config.json" if Path("service_config.json").exists() else "Environment Variables")
     service_settings.ensure_directories()
     service_store = store or RedisJobStore(
         service_settings.redis_url,
