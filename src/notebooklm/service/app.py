@@ -55,6 +55,9 @@ class HealthResponse(BaseModel):
     queue_length: int
     active_job_id: str | None = None
     auth_configured: bool
+    storage_path: str | None = None
+    download_ttl_seconds: int
+    api_token_configured: bool
 
 
 def create_app(
@@ -235,15 +238,19 @@ def create_app(
     async def healthz() -> HealthResponse:
         active_job_id = await service_store.get_active_job_id()
         queue_length = await service_store.queue_length()
-        auth_configured = bool(
-            os.getenv("NOTEBOOKLM_AUTH_JSON")
-            or os.path.exists(os.getenv("NOTEBOOKLM_STORAGE_PATH", ""))
-        )
+        
+        # Check if auth file actually exists
+        storage_path = service_settings.storage_path
+        auth_exists = storage_path.exists() if storage_path else False
+        
         return HealthResponse(
             ok=True,
             queue_length=queue_length,
             active_job_id=active_job_id,
-            auth_configured=auth_configured,
+            auth_configured=auth_exists,
+            storage_path=str(storage_path) if storage_path else None,
+            download_ttl_seconds=service_settings.download_ttl_seconds,
+            api_token_configured=service_settings.api_token != "dev-token"
         )
 
     return app
