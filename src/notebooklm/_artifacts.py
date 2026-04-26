@@ -224,15 +224,22 @@ class ArtifactsAPI:
             await client.artifacts.rename(notebook_id, artifact_id, "New Title")
     """
 
-    def __init__(self, core: ClientCore, notes_api: "NotesAPI"):
+    def __init__(
+        self,
+        core: ClientCore,
+        notes_api: "NotesAPI",
+        storage_path: Path | None = None,
+    ):
         """Initialize the artifacts API.
 
         Args:
             core: The core client infrastructure.
             notes_api: The notes API for accessing notes/mind maps.
+            storage_path: Path to storage state file for loading download cookies.
         """
         self._core = core
         self._notes = notes_api
+        self._storage_path = storage_path
 
     # =========================================================================
     # List/Get Operations
@@ -981,6 +988,8 @@ class ArtifactsAPI:
         self,
         notebook_id: str,
         source_ids: builtins.list[str] | None = None,
+        language: str = "en",
+        instructions: str | None = None,
     ) -> dict[str, Any]:
         """Generate an interactive mind map.
 
@@ -990,6 +999,8 @@ class ArtifactsAPI:
         Args:
             notebook_id: The notebook ID.
             source_ids: Source IDs to include. If None, uses all sources.
+            language: Language code (default: "en").
+            instructions: Custom instructions for the mind map.
 
         Returns:
             Dictionary with 'mind_map' (JSON data) and 'note_id'.
@@ -1007,7 +1018,7 @@ class ArtifactsAPI:
             None,
             None,
             None,
-            ["interactive_mindmap", [["[CONTEXT]", ""]], ""],
+            ["interactive_mindmap", [["[CONTEXT]", instructions or ""]], language],
             None,
             [2, None, [1]],
         ]
@@ -1250,28 +1261,13 @@ class ArtifactsAPI:
         if not info_art:
             raise ArtifactNotReadyError("infographic")
 
-        # Extract URL from metadata
+        # Reuse the shared helper so readiness checks and downloads agree on
+        # which URL to select (both now iterate forward, preferring the
+        # canonical content URL at a lower index).
         try:
-            metadata = None
-            for item in reversed(info_art):
-                if isinstance(item, list) and len(item) > 0 and isinstance(item[0], list):
-                    if len(item) > 2 and isinstance(item[2], list) and len(item[2]) > 0:
-                        content_list = item[2]
-                        if isinstance(content_list[0], list) and len(content_list[0]) > 1:
-                            img_data = content_list[0][1]
-                            if (
-                                isinstance(img_data, list)
-                                and len(img_data) > 0
-                                and isinstance(img_data[0], str)
-                                and img_data[0].startswith("http")
-                            ):
-                                metadata = item
-                                break
-
-            if not metadata:
+            url = self._find_infographic_url(info_art)
+            if not url:
                 raise ArtifactParseError("infographic", details="Could not find metadata")
-
-            url = metadata[2][0][1][0]
             return await self._download_url(url, output_path)
 
         except (IndexError, TypeError) as e:
@@ -1732,7 +1728,16 @@ class ArtifactsAPI:
             task_id: The task/artifact ID to check.
 
         Returns:
-            GenerationStatus with current status.
+            GenerationStatus with current status.  When the artifact is not
+            found in the list, ``status`` is set to ``"not_found"`` so that
+            callers can distinguish "genuinely pending" from "removed by the
+            server" (e.g. after a quota rejection).
+
+        .. versionchanged:: 0.4.0
+            **Breaking change:** Previously returned ``status="pending"``
+            when an artifact was absent from the list.  Now returns
+            ``status="not_found"`` to allow callers to distinguish a
+            genuinely pending artifact from one that was removed.
         """
         # List all artifacts and find by ID (no poll-by-ID RPC exists)
         artifacts_data = await self._list_raw(notebook_id)
@@ -1756,9 +1761,23 @@ class ArtifactsAPI:
                         status_code = ArtifactStatus.PROCESSING
 
                 status = artifact_status_to_str(status_code)
-                return GenerationStatus(task_id=task_id, status=status)
 
-        return GenerationStatus(task_id=task_id, status="pending")
+                # Extract error details from failed artifacts.
+                # The API may embed an error reason string at art[3] when
+                # the artifact fails (e.g. daily quota exceeded).
+                error_msg: str | None = None
+                if status == "failed":
+                    error_msg = self._extract_artifact_error(art)
+
+                return GenerationStatus(
+                    task_id=task_id,
+                    status=status,
+                    error=error_msg,
+                )
+
+        # Artifact not found in the list.  Use a distinct status so
+        # wait_for_completion can differentiate from genuine "pending".
+        return GenerationStatus(task_id=task_id, status="not_found")
 
     async def wait_for_completion(
         self,
@@ -1768,6 +1787,8 @@ class ArtifactsAPI:
         max_interval: float = 10.0,
         timeout: float = 300.0,
         poll_interval: float | None = None,  # Deprecated, use initial_interval
+        max_not_found: int = 5,
+        min_not_found_window: float = 10.0,
     ) -> GenerationStatus:
         """Wait for a generation task to complete.
 
@@ -1780,6 +1801,15 @@ class ArtifactsAPI:
             max_interval: Maximum seconds between status checks.
             timeout: Maximum seconds to wait.
             poll_interval: Deprecated. Use initial_interval instead.
+            max_not_found: Consecutive "not found" polls before treating
+                the task as failed.  When the API removes an artifact
+                from the list (e.g. after a daily-quota rejection), the
+                poller would otherwise spin until *timeout*.  Defaults
+                to 5 to tolerate brief replication lag and slow networks.
+            min_not_found_window: Minimum seconds that must have elapsed
+                since the *first* not-found response before a consecutive
+                run triggers failure.  This avoids false positives on
+                slow or unreliable networks.  Defaults to 10.0.
 
         Returns:
             Final GenerationStatus.
@@ -1800,16 +1830,73 @@ class ArtifactsAPI:
 
         start_time = asyncio.get_running_loop().time()
         current_interval = initial_interval
+        consecutive_not_found = 0
+        total_not_found = 0
+        first_not_found_time: float | None = None
+        last_status: str | None = None
 
         while True:
             status = await self.poll_status(notebook_id, task_id)
+            last_status = status.status
 
             if status.is_complete or status.is_failed:
                 return status
 
+            # Track consecutive and total "not found" responses.  The API
+            # may remove quota-rejected artifacts from the list entirely
+            # instead of setting them to FAILED.  We track both a
+            # consecutive run *and* a total count to handle "flickering"
+            # artifacts that alternate between found/not-found due to API
+            # replication lag.
+            if status.status == "not_found":
+                consecutive_not_found += 1
+                total_not_found += 1
+                now = asyncio.get_running_loop().time()
+                if first_not_found_time is None:
+                    first_not_found_time = now
+                not_found_elapsed = now - first_not_found_time
+
+                # Trigger failure when consecutive threshold is met AND
+                # enough wall-clock time has passed (avoids false positives
+                # on fast networks), OR when total not-found count is high
+                # enough to indicate flickering artifacts.
+                consecutive_trigger = (
+                    consecutive_not_found >= max_not_found
+                    and not_found_elapsed >= min_not_found_window
+                )
+                total_trigger = total_not_found >= max_not_found * 2
+
+                if consecutive_trigger or total_trigger:
+                    trigger = (
+                        f"consecutive={consecutive_not_found}"
+                        if consecutive_trigger
+                        else f"total={total_not_found}"
+                    )
+                    logger.warning(
+                        "Artifact %s disappeared from list (%s not-found polls, "
+                        "%s) — treating as failed",
+                        task_id,
+                        trigger,
+                        f"elapsed={not_found_elapsed:.1f}s",
+                    )
+                    return GenerationStatus(
+                        task_id=task_id,
+                        status="failed",
+                        error=(
+                            "Generation failed: artifact was removed by the server. "
+                            "This may indicate a daily quota/rate limit was exceeded, "
+                            "an invalid notebook ID, or a transient API issue. "
+                            "Try again later."
+                        ),
+                    )
+            else:
+                consecutive_not_found = 0
+
             elapsed = asyncio.get_running_loop().time() - start_time
             if elapsed > timeout:
-                raise TimeoutError(f"Task {task_id} timed out after {timeout}s")
+                raise TimeoutError(
+                    f"Task {task_id} timed out after {timeout}s (last status: {last_status})"
+                )
 
             # Clamp sleep duration to respect timeout
             remaining_time = timeout - elapsed
@@ -2054,7 +2141,7 @@ class ArtifactsAPI:
         downloaded: list[str] = []
 
         # Load cookies with domain info for cross-domain redirect handling
-        cookies = load_httpx_cookies()
+        cookies = load_httpx_cookies(path=self._storage_path)
 
         async with httpx.AsyncClient(
             cookies=cookies,
@@ -2063,6 +2150,20 @@ class ArtifactsAPI:
         ) as client:
             for url, output_path in urls_and_paths:
                 try:
+                    # Validate URL scheme and domain before sending auth cookies
+                    parsed = urlparse(url)
+                    if parsed.scheme != "https":
+                        raise ArtifactDownloadError(
+                            "media", details=f"Download URL must use HTTPS: {url[:80]}"
+                        )
+                    trusted = (".google.com", ".googleusercontent.com", ".googleapis.com")
+                    if not any(
+                        parsed.netloc == d.lstrip(".") or parsed.netloc.endswith(d) for d in trusted
+                    ):
+                        raise ArtifactDownloadError(
+                            "media", details=f"Untrusted download domain: {parsed.netloc}"
+                        )
+
                     response = await client.get(url)
                     response.raise_for_status()
 
@@ -2119,7 +2220,7 @@ class ArtifactsAPI:
         temp_file = output_file.with_suffix(output_file.suffix + ".tmp")
 
         # Load cookies with domain info for cross-domain redirect handling
-        cookies = load_httpx_cookies()
+        cookies = load_httpx_cookies(path=self._storage_path)
 
         # Use granular timeouts: 10s to connect, 30s per chunk read/write
         # This allows large files to download without timeout while still
@@ -2197,6 +2298,57 @@ class ArtifactsAPI:
             task_id="", status="failed", error="Generation failed - no artifact_id returned"
         )
 
+    @staticmethod
+    def _extract_artifact_error(art: builtins.list[Any]) -> str | None:
+        """Try to extract a human-readable error from a failed artifact.
+
+        Google's batchexecute responses embed error information in varying
+        positions depending on the artifact type.  This method walks through
+        known locations and returns the first non-empty string it finds.
+
+        Known error locations (reverse-engineered):
+        - art[3]: Sometimes contains an error reason string.
+        - art[5]: May contain a nested error payload similar to the
+          UserDisplayableError structure in RPC responses.
+
+        Args:
+            art: Raw artifact data from ``_list_raw()``.
+
+        Returns:
+            A human-readable error string, or ``None`` if no error detail
+            could be extracted.
+        """
+        try:
+            # art[3] — simple string error reason
+            if len(art) > 3 and isinstance(art[3], str) and art[3].strip():
+                return art[3].strip()
+
+            # art[5] — nested structure that may contain error text.
+            # NOTE: This position is protocol-dependent and was
+            # reverse-engineered; it may change without notice.
+            if len(art) > 5 and isinstance(art[5], list):
+                logger.debug(
+                    "Falling back to art[5] for error extraction (art[3]=%r)",
+                    art[3] if len(art) > 3 else "<missing>",
+                )
+                # Walk the list looking for the first non-empty string
+                for item in art[5]:
+                    if isinstance(item, str) and item.strip():
+                        return item.strip()
+                    if isinstance(item, list):
+                        for sub in item:
+                            if isinstance(sub, str) and sub.strip():
+                                return sub.strip()
+
+            return None
+        except Exception:
+            logger.warning(
+                "Failed to extract error from artifact data: %r",
+                art[:6] if len(art) > 6 else art,
+                exc_info=True,
+            )
+            return None
+
     def _get_artifact_type_name(self, artifact_type: int) -> str:
         """Get human-readable name for an artifact type.
 
@@ -2226,7 +2378,8 @@ class ArtifactsAPI:
         """Extract infographic image URL from artifact data.
 
         Infographic URLs are deeply nested in the artifact structure.
-        This method searches backwards through the artifact to find the URL.
+        This method searches forward through the artifact to prefer the
+        canonical content URL over any later URL-containing fields.
 
         Args:
             art: Raw artifact data from _list_raw().
@@ -2234,7 +2387,7 @@ class ArtifactsAPI:
         Returns:
             The image URL if found, None otherwise.
         """
-        for item in reversed(art):
+        for item in art:
             if not isinstance(item, list) or len(item) <= 2:
                 continue
             content = item[2]

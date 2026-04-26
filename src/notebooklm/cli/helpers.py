@@ -27,7 +27,7 @@ from ..auth import (
     load_auth_from_storage,
 )
 from ..exceptions import RPCTimeoutError
-from ..paths import get_browser_profile_dir, get_context_path
+from ..paths import get_context_path
 from ..types import ArtifactType
 
 if TYPE_CHECKING:
@@ -35,12 +35,6 @@ if TYPE_CHECKING:
 
 console = Console()
 logger = logging.getLogger(__name__)
-
-# Backward-compatible module-level constants (for tests that patch these)
-# Note: Prefer using get_context_path() and get_browser_profile_dir() for dynamic resolution
-# These are evaluated once at import time, so NOTEBOOKLM_HOME changes after import won't affect them
-CONTEXT_FILE = get_context_path()
-BROWSER_PROFILE_DIR = get_browser_profile_dir()
 
 # CLI artifact type name aliases
 _CLI_ARTIFACT_ALIASES = {
@@ -243,11 +237,16 @@ def set_current_notebook(
     context_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def clear_context():
-    """Clear the current context."""
+def clear_context() -> bool:
+    """Clear the current context.
+
+    Returns True if a context file was removed, False if none existed.
+    """
     context_file = get_context_path()
     if context_file.exists():
         context_file.unlink()
+        return True
+    return False
 
 
 def get_current_conversation() -> str | None:
@@ -701,6 +700,7 @@ def get_source_type_display(source_type: str) -> str:
         "google_drive_video": "🎬 Drive Video",
         "image": "🖼️ Image",
         "csv": "📊 CSV",
+        "epub": "📕 EPUB",
         "unknown": "❓ Unknown",
     }
     return type_map.get(type_str, f"❓ {type_str}")

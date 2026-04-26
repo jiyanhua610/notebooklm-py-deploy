@@ -24,6 +24,7 @@ from .types import (
     SourceNotFoundError,
     SourceProcessingError,
     SourceTimeoutError,
+    _extract_source_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,12 +103,12 @@ class SourcesAPI:
                 src_id = src[0][0] if isinstance(src[0], list) else src[0]
                 title = src[1] if len(src) > 1 else None
 
-                # Extract URL if present (at src[2][7])
-                url = None
-                if len(src) > 2 and isinstance(src[2], list) and len(src[2]) > 7:
-                    url_list = src[2][7]
-                    if isinstance(url_list, list) and len(url_list) > 0:
-                        url = url_list[0]
+                # Extract URL via the shared helper. GET_NOTEBOOK source entries
+                # use the same medium-nested metadata shape as
+                # Source.from_api_response, which doesn't support the bare-http
+                # [0] fallback (metadata[0] can pack unrelated data). Precedence
+                # is restricted to [7] > [5]; keep the two call sites aligned.
+                url = _extract_source_url(src[2] if len(src) > 2 else None, allow_bare_http=False)
 
                 # Extract timestamp from src[2][2] - [seconds, nanoseconds]
                 created_at = None
@@ -417,6 +418,7 @@ class SourcesAPI:
             - PDF: application/pdf
             - Text: text/plain
             - Markdown: text/markdown
+            - EPUB: application/epub+zip
             - Word: application/vnd.openxmlformats-officedocument.wordprocessingml.document
         """
         logger.debug("Adding file source to notebook %s: %s", notebook_id, file_path)

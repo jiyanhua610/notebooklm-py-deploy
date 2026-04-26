@@ -69,6 +69,9 @@ The client requires valid Google session cookies obtained via browser login:
 client = await NotebookLMClient.from_storage()
 client = await NotebookLMClient.from_storage("/path/to/storage_state.json")
 
+# From a named profile
+client = await NotebookLMClient.from_storage(profile="work")
+
 # From AuthTokens directly
 from notebooklm import AuthTokens
 auth = AuthTokens(
@@ -77,6 +80,9 @@ auth = AuthTokens(
     session_id="..."
 )
 client = NotebookLMClient(auth)
+
+# AuthTokens also supports profiles
+auth = AuthTokens.from_storage(profile="work")
 ```
 
 **Environment Variable Support:**
@@ -86,13 +92,17 @@ The library respects these environment variables for authentication:
 | Variable | Description |
 |----------|-------------|
 | `NOTEBOOKLM_HOME` | Base directory for config files (default: `~/.notebooklm`) |
+| `NOTEBOOKLM_PROFILE` | Active profile name (default: `default`) |
 | `NOTEBOOKLM_AUTH_JSON` | Inline auth JSON - no file needed (for CI/CD) |
 
 **Precedence** (highest to lowest):
 1. Explicit `path` argument to `from_storage()`
 2. `NOTEBOOKLM_AUTH_JSON` environment variable
-3. `$NOTEBOOKLM_HOME/storage_state.json`
-4. `~/.notebooklm/storage_state.json`
+3. Explicit `profile` argument to `from_storage(profile="work")`
+4. `NOTEBOOKLM_PROFILE` environment variable (resolves to `~/.notebooklm/profiles/<name>/storage_state.json`)
+5. Active profile from `~/.notebooklm/active_profile`
+6. `~/.notebooklm/profiles/default/storage_state.json`
+7. `~/.notebooklm/storage_state.json` (legacy fallback)
 
 **CI/CD Example:**
 ```python
@@ -165,8 +175,14 @@ class NotebookLMClient:
 
     @classmethod
     async def from_storage(
-        cls, path: str | None = None, timeout: float = 30.0
+        cls, path: str | None = None, timeout: float = 30.0,
+        profile: str | None = None
     ) -> "NotebookLMClient"
+
+    def __init__(
+        self, auth: AuthTokens, timeout: float = 30.0,
+        storage_path: Path | None = None
+    )
 
     async def refresh_auth(self) -> AuthTokens
 ```
@@ -384,6 +400,7 @@ path = await client.artifacts.download_flashcards(nb_id, "cards.md", output_form
 - Mind map downloads return a JSON tree structure with `name` and `children` fields
 - Data table downloads parse the complex rich-text format into CSV rows/columns
 - Quiz/flashcard formats: `json` (structured), `markdown` (readable), `html` (raw)
+- Downloads automatically use the storage path from `from_storage(path=...)` or the resolved profile for cookie authentication
 
 #### Export Methods
 

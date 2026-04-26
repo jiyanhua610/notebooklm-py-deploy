@@ -91,6 +91,7 @@ class SourceType(str, Enum):
     MARKDOWN = "markdown"
     DOCX = "docx"
     CSV = "csv"
+    EPUB = "epub"
     IMAGE = "image"
     MEDIA = "media"
     UNKNOWN = "unknown"
@@ -138,6 +139,7 @@ _SOURCE_TYPE_CODE_MAP: dict[int, SourceType] = {
     13: SourceType.IMAGE,
     14: SourceType.GOOGLE_SPREADSHEET,
     16: SourceType.CSV,
+    17: SourceType.EPUB,
 }
 
 # Mapping from internal int codes to ArtifactType enum
@@ -166,6 +168,7 @@ _SOURCE_TYPE_COMPAT_MAP: dict[SourceType, str] = {
     SourceType.MARKDOWN: "text_file",
     SourceType.DOCX: "text_file",
     SourceType.CSV: "text",
+    SourceType.EPUB: "text_file",
     SourceType.IMAGE: "text",
     SourceType.MEDIA: "text",
     SourceType.UNKNOWN: "text",
@@ -239,6 +242,39 @@ def _map_artifact_kind(artifact_type: int, variant: int | None) -> ArtifactType:
             )
         return ArtifactType.UNKNOWN
     return result
+
+
+def _extract_source_url(metadata: Any, *, allow_bare_http: bool = True) -> str | None:
+    """Extract a source URL from a ``src[2]`` metadata array.
+
+    NotebookLM stores source URLs at different indices of the metadata array
+    depending on the source type:
+
+    - ``metadata[7]`` → ``[url]`` for web page / PDF sources
+    - ``metadata[5]`` → ``[url, video_id, channel_name]`` for YouTube sources
+    - ``metadata[0]`` → bare URL string for some older/alternate shapes
+
+    Precedence is ``[7] > [5] > [0]``. The ``[0]`` fallback is gated by
+    ``allow_bare_http`` because medium-nested ``from_api_response`` shapes
+    don't support it (``metadata[0]`` can pack unrelated data there).
+    Returns ``None`` if ``metadata`` is not a list or no probe matches.
+    """
+    if not isinstance(metadata, list):
+        return None
+    url: str | None = None
+    if len(metadata) > 7:
+        url_list = metadata[7]
+        if isinstance(url_list, list) and len(url_list) > 0:
+            url = url_list[0]
+    if not url and len(metadata) > 5:
+        yt_data = metadata[5]
+        if isinstance(yt_data, list) and len(yt_data) > 0 and isinstance(yt_data[0], str):
+            url = yt_data[0]
+    if not url and allow_bare_http and len(metadata) > 0:
+        candidate = metadata[0]
+        if isinstance(candidate, str) and candidate.startswith("http"):
+            url = candidate
+    return url
 
 
 __all__ = [
@@ -579,28 +615,31 @@ class Source:
                     source_id = entry[0][0] if isinstance(entry[0], list) else entry[0]
                     title = entry[1] if len(entry) > 1 else None
 
-                    # Try to extract URL if present
-                    url = None
-                    if len(entry) > 2 and isinstance(entry[2], list):
-                        if len(entry[2]) > 7 and isinstance(entry[2][7], list):
-                            url = entry[2][7][0] if entry[2][7] else None
+                    # Extract URL and type code from entry[2] via the shared
+                    # helper. Medium-nested shapes don't support the bare-http
+                    # [0] fallback, so precedence is restricted to [7] > [5].
+                    metadata = entry[2] if len(entry) > 2 and isinstance(entry[2], list) else None
+                    url = _extract_source_url(metadata, allow_bare_http=False)
+                    type_code = (
+                        metadata[4]
+                        if metadata is not None
+                        and len(metadata) > 4
+                        and isinstance(metadata[4], int)
+                        else None
+                    )
 
-                    return cls(id=str(source_id), title=title, url=url, _type_code=None)
+                    return cls(id=str(source_id), title=title, url=url, _type_code=type_code)
 
-                # Deeply nested: continue with URL and type code extraction
-                url = None
-                type_code = None
-                if len(entry) > 2 and isinstance(entry[2], list):
-                    if len(entry[2]) > 7:
-                        url_list = entry[2][7]
-                        if isinstance(url_list, list) and len(url_list) > 0:
-                            url = url_list[0]
-                    if not url and len(entry[2]) > 0:
-                        if isinstance(entry[2][0], str) and entry[2][0].startswith("http"):
-                            url = entry[2][0]
-                    # Extract type code at entry[2][4] if available
-                    if len(entry[2]) > 4 and isinstance(entry[2][4], int):
-                        type_code = entry[2][4]
+                # Deeply-nested shape: extract URL (via shared helper) and
+                # type code from entry[2] if present. Full precedence applies:
+                # [7] > [5] > bare-http at [0].
+                metadata = entry[2] if len(entry) > 2 and isinstance(entry[2], list) else None
+                url = _extract_source_url(metadata)
+                type_code = (
+                    metadata[4]
+                    if metadata is not None and len(metadata) > 4 and isinstance(metadata[4], int)
+                    else None
+                )
 
                 return cls(
                     id=str(source_id),
@@ -950,7 +989,7 @@ class GenerationStatus:
     """
 
     task_id: str  # Same as artifact_id - used for polling and becomes Artifact.id
-    status: str  # "pending", "in_progress", "completed", "failed"
+    status: str  # "pending", "in_progress", "completed", "failed", "not_found"
     url: str | None = None
     error: str | None = None
     error_code: str | None = None  # e.g., "USER_DISPLAYABLE_ERROR" for rate limits
@@ -977,6 +1016,22 @@ class GenerationStatus:
         return self.status == "in_progress"
 
     @property
+    def is_not_found(self) -> bool:
+        """Check if the artifact was not found in the poll response.
+
+        This status is set by ``poll_status()`` when the artifact ID is
+        absent from the artifact list.  It differs from ``is_pending``:
+        a ``pending`` artifact exists in the list and is queued, while a
+        ``not_found`` artifact has either not yet appeared (brief lag after
+        creation) or was silently removed by the server (e.g. after a
+        daily-quota rejection).
+
+        ``wait_for_completion`` treats a sustained run of ``not_found``
+        responses as a failure — see its ``max_not_found`` parameter.
+        """
+        return self.status == "not_found"
+
+    @property
     def is_rate_limited(self) -> bool:
         """Check if generation failed due to rate limiting or quota exceeded.
 
@@ -993,7 +1048,11 @@ class GenerationStatus:
         # Fall back to string matching for backwards compatibility
         if self.error is not None:
             error_lower = self.error.lower()
-            return "rate limit" in error_lower or "quota" in error_lower
+            return (
+                "rate limit" in error_lower
+                or "quota" in error_lower
+                or "limit exceeded" in error_lower
+            )
 
         return False
 

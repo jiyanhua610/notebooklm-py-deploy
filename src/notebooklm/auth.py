@@ -140,10 +140,6 @@ GOOGLE_REGIONAL_CCTLDS = frozenset(
     }
 )
 
-# Default path for Playwright storage state
-# Note: Use get_storage_path() for dynamic resolution with NOTEBOOKLM_HOME support
-DEFAULT_STORAGE_PATH = get_storage_path()
-
 
 @dataclass
 class AuthTokens:
@@ -169,15 +165,18 @@ class AuthTokens:
         return "; ".join(f"{k}={v}" for k, v in self.cookies.items())
 
     @classmethod
-    async def from_storage(cls, path: Path | None = None) -> "AuthTokens":
+    async def from_storage(
+        cls, path: Path | None = None, profile: str | None = None
+    ) -> "AuthTokens":
         """Create AuthTokens from Playwright storage state file.
 
         This is the recommended way to create AuthTokens for programmatic use.
         It loads cookies from storage and fetches CSRF/session tokens automatically.
 
         Args:
-            path: Path to storage_state.json. If None, uses default location
-                  (~/.notebooklm/storage_state.json).
+            path: Path to storage_state.json. If provided, takes precedence over profile.
+            profile: Profile name to load auth from (e.g., "work", "personal").
+                If None, uses the active profile (from CLI flag, env var, or config).
 
         Returns:
             Fully initialized AuthTokens ready for API calls.
@@ -191,7 +190,14 @@ class AuthTokens:
             auth = await AuthTokens.from_storage()
             async with NotebookLMClient(auth) as client:
                 notebooks = await client.list_notebooks()
+
+            # Load from a specific profile
+            auth = await AuthTokens.from_storage(profile="work")
         """
+        if path is None and profile is not None:
+            from .paths import get_storage_path
+
+            path = get_storage_path(profile=profile)
         cookies = load_auth_from_storage(path)
         csrf_token, session_id = await fetch_tokens(cookies)
         return cls(cookies=cookies, csrf_token=csrf_token, session_id=session_id)
@@ -246,6 +252,57 @@ def _is_allowed_auth_domain(domain: str) -> bool:
     """
     # Check if domain is in the primary allowlist or is a valid Google domain (base or regional)
     return domain in ALLOWED_COOKIE_DOMAINS or _is_google_domain(domain)
+
+
+def convert_rookiepy_cookies_to_storage_state(
+    rookiepy_cookies: list[dict],
+) -> dict[str, Any]:
+    """Convert rookiepy cookie dicts to Playwright storage_state.json format.
+
+    Key mappings:
+    - ``http_only`` → ``httpOnly`` (snake_case to camelCase)
+    - ``expires=None`` → ``expires=-1`` (Playwright convention for session cookies)
+    - ``sameSite`` always ``"None"`` for cross-site Google cookies
+
+    Args:
+        rookiepy_cookies: List of cookie dicts from any ``rookiepy.*()`` call.
+            Required keys: ``domain``, ``name``, ``value``.
+
+    Returns:
+        Dict matching storage_state.json schema: ``{"cookies": [...], "origins": []}``.
+        Cookies missing required fields or from non-Google domains are silently skipped.
+    """
+    converted = []
+    for cookie in rookiepy_cookies:
+        domain = cookie.get("domain", "")
+        name = cookie.get("name", "")
+        value = cookie.get("value", "")
+
+        # Validate required fields
+        if not name or not value or not domain:
+            continue
+
+        if not _is_allowed_auth_domain(domain):
+            continue
+
+        path = cookie.get("path", "/")
+        http_only = cookie.get("http_only", False)
+        secure = cookie.get("secure", False)
+        expires = cookie.get("expires")
+
+        converted.append(
+            {
+                "name": name,
+                "value": value,
+                "domain": domain,
+                "path": path,
+                "expires": expires if expires is not None else -1,
+                "httpOnly": http_only,
+                "secure": secure,
+                "sameSite": "None",
+            }
+        )
+    return {"cookies": converted, "origins": []}
 
 
 def extract_cookies_from_storage(storage_state: dict[str, Any]) -> dict[str, str]:
