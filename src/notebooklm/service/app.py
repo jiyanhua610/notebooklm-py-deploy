@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import secrets
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
@@ -16,6 +15,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from redis.exceptions import RedisError
 
 from .config import ServiceSettings
 from .models import TERMINAL_STATUSES, DownloadEntry, JobRecord, JobStatus, utc_now
@@ -70,7 +70,7 @@ def create_app(
     """Create the PDF service application."""
 
     service_settings = settings or ServiceSettings.load()
-    logger.info("Service configuration loaded (Source: %s)", 
+    logger.info("Service configuration loaded (Source: %s)",
                 "service_config.json" if Path("service_config.json").exists() else "Environment Variables")
     service_settings.ensure_directories()
     service_store = store or RedisJobStore(
@@ -237,13 +237,20 @@ def create_app(
 
     @app.get("/healthz", response_model=HealthResponse)
     async def healthz() -> HealthResponse:
-        active_job_id = await service_store.get_active_job_id()
-        queue_length = await service_store.queue_length()
-        
+        try:
+            active_job_id = await service_store.get_active_job_id()
+            queue_length = await service_store.queue_length()
+        except RedisError as exc:
+            logger.warning("healthz: Redis unavailable (%s)", exc)
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "redis_unavailable", "message": str(exc)},
+            ) from exc
+
         # Check if auth file actually exists
         storage_path = service_settings.storage_path
         auth_exists = storage_path.exists() if storage_path else False
-        
+
         google_auth_ok = None
         if auth_exists:
             try:
@@ -361,7 +368,7 @@ async def _process_job(app: FastAPI, job_id: str) -> None:
         job.update_timestamp()
         await store.save_job(job)
         lock_task = asyncio.create_task(_renew_lock_loop(store, settings, job_id))
-        
+
         logger.info("Job %s: Starting execution flow...", job_id)
         notebook_id, output_path = await processor.process(
             job,
